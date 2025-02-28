@@ -58,7 +58,7 @@ def get_pricing_data():
 
 @app.route("/")
 def home():
-    return "<h1>Surprise Granite AI Chatbot</h1><p>Your AI assistant is ready.</p>"
+    return "<h1>Remodely AI Chatbot</h1><p>Your AI assistant is ready.</p>"
 
 @app.route("/chat", methods=["POST"])
 def chat():
