@@ -133,16 +133,11 @@ def estimate():
         slab_count = math.ceil(effective_sq_ft / color_total_sqft)
 
         # Determine labor rate based on job type and material category
-        # For simplicity, assume:
-        # - "fabricate and install": Granite/Quartz: $45, Quartzite/Marble: $65, Dekton/Porcelain: $85 per sq ft
-        # - "slab only": add 35% markup instead of 30%
         if job_type.lower() == "slab only":
             markup = 1.35
         else:
             markup = 1.30
 
-        # Here you might determine the labor rate based on vendor/material specifics.
-        # For this example, we use a base labor rate and then apply the markup.
         base_labor_rate = 45  # default for Granite/Quartz
 
         labor_cost = total_sq_ft * base_labor_rate * markup
@@ -254,7 +249,6 @@ def millwork_estimate():
             "Please provide a comprehensive, professional, and friendly written estimate for millwork services based on the above details."
         )
 
-        # Generate narrative estimate with GPT‑4
         ai_response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
@@ -271,6 +265,37 @@ def millwork_estimate():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+# New Registration Endpoint
+@app.route("/api/register", methods=["POST", "OPTIONS"])
+def register():
+    # Handle preflight OPTIONS requests for CORS
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+
+    data = request.json
+    if not data or not data.get("name") or not data.get("email") or not data.get("password"):
+        return jsonify({"error": "Missing required fields: name, email, and password are required."}), 400
+
+    # Here you would normally store the new user in your database.
+    # For now, we simulate a successful registration.
+    return jsonify({"message": "User registered successfully"}), 201
+
+# New Login Endpoint
+@app.route("/api/login", methods=["POST", "OPTIONS"])
+def login():
+    # Handle preflight OPTIONS requests for CORS
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+
+    data = request.json
+    if not data or not data.get("email") or not data.get("password"):
+        return jsonify({"error": "Missing required fields: email and password"}), 400
+
+    # Here you would normally verify the user's credentials against your database.
+    # For now, we simulate a successful login and return a dummy token.
+    dummy_token = "dummy_token_value"
+    return jsonify({"message": "Login successful", "token": dummy_token}), 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
