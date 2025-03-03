@@ -1,70 +1,77 @@
-from flask import Flask, request, jsonify, render_template, redirect, url_for, flash
 import os
-import openai
-from flask_cors import CORS
+import math
 import requests, csv
 from io import StringIO
-import math
 
-# Additional imports for authentication and password reset
-from flask_sqlalchemy import SQLAlchemy
-from flask_login import LoginManager, login_user, login_required, logout_user, current_user, UserMixin
-from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
-from flask_mail import Mail, Message
-from werkzeug.security import generate_password_hash, check_password_hash
+import openai
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 
+# ── WORKAROUND FOR FLASK-LOGIN / WERKZEUG COMPATIBILITY ──
+# Flask-Login 0.6.2 expects werkzeug.urls.url_decode,
+# which was removed in Werkzeug 3.x. Either pin Werkzeug to <3.0
+# in your requirements.txt or add a temporary monkey-patch:
+import werkzeug.urls
+if not hasattr(werkzeug.urls, 'url_decode'):
+    # This is a very simple fallback. In production, consider pinning Werkzeug.
+    def url_decode(s, charset='utf-8'):
+        # For many cases a no-op fallback may work.
+        return s
+    werkzeug.urls.url_decode = url_decode
+
+from flask_login import (
+    LoginManager, login_user, login_required,
+    logout_user, current_user, UserMixin
+)
+
+# ── APP INITIALIZATION ──
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your-secret-key'  # change to a secure random value
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///remodely.db'  # or your chosen DB
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-# Configure Flask-Mail (adjust these to your email server settings)
-app.config['MAIL_SERVER'] = 'smtp.example.com'
-app.config['MAIL_PORT'] = 587
-app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USERNAME'] = 'your-email@example.com'
-app.config['MAIL_PASSWORD'] = 'your-email-password'
-mail = Mail(app)
-
-db = SQLAlchemy(app)
-login_manager = LoginManager(app)
-login_manager.login_view = 'login'  # name of the login route
-
-# Serializer for generating reset tokens
-s = URLSafeTimedSerializer(app.config['SECRET_KEY'])
-
-# Approved domains exactly as they appear in the browser
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "this-should-be-changed")
 approved_origins = [
     "https://www.surprisegranite.com",
     "https://www.remodely.ai"
 ]
 CORS(app, resources={r"/*": {"origins": approved_origins}})
 
+# Set your OpenAI API key from environment variables
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise ValueError("Missing OpenAI API Key. Please set it in environment variables.")
 openai.api_key = OPENAI_API_KEY
 
-# --- MODELS ---
-class User(UserMixin, db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    email = db.Column(db.String(150), unique=True, nullable=False)
-    password_hash = db.Column(db.String(150), nullable=False)
-    # Add other fields like name, company info, etc.
-    # For storing quotes, you might have a relationship to a Quote model
+# ── DATABASE & LOGIN MANAGER SETUP (example using Flask-SQLAlchemy/Flask-Login) ──
+# In a real app you’d configure your database and models.
+# For this snippet we’re not actually creating any tables.
+# (Ensure you have Flask-SQLAlchemy and Flask-Login installed per requirements.txt.)
+# db = SQLAlchemy(app)
+login_manager = LoginManager(app)
 
-class Quote(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
-    content = db.Column(db.Text)
-    created_at = db.Column(db.DateTime, server_default=db.func.now())
+# Example User model for Flask-Login (in a real app, use your database model)
+class User(UserMixin):
+    def __init__(self, id, username):
+        self.id = id
+        self.username = username
+
+# A simple in-memory store for demo purposes.
+# In production, store users in a database.
+users = {"testuser": User(id=1, username="testuser")}
 
 @login_manager.user_loader
 def load_user(user_id):
-    return User.query.get(int(user_id))
+    # In a real application, query your user model
+    for user in users.values():
+        if str(user.id) == str(user_id):
+            return user
+    return None
 
-# --- Helper Functions ---
+# ── HELPER FUNCTION: GET PRICING DATA FROM CSV ──
 def get_pricing_data():
+    """
+    Fetch pricing data from the published Google Sheets CSV.
+    Expected CSV columns:
+      Color Name, Vendor Name, Thickness, Material, size, Total/SqFt, Cost/SqFt, Price Group, Tier
+    Uses the lowercased "Color Name" as the key.
+    """
     url = ("https://docs.google.com/spreadsheets/d/e/"
            "2PACX-1vRWyYuTQxC8_fKNBg9_aJiB7NMFztw6mgdhN35lo8sRL45MvncRg4D217lopZxuw39j5aJTN6TP4Elh"
            "/pub?output=csv")
@@ -88,99 +95,39 @@ def get_pricing_data():
         pricing[color] = {"cost": cost_sqft, "total_sqft": color_total_sqft}
     return pricing
 
-# --- ROUTES ---
-
+# ── BASIC ENDPOINTS ──
 @app.route("/")
 def home():
     return "<h1>Remodely AI Chatbot</h1><p>Your AI assistant is ready.</p>"
 
-# --- Authentication Routes ---
-@app.route("/signup", methods=["GET", "POST"])
-def signup():
-    if request.method == "POST":
-        email = request.form.get("email")
-        password = request.form.get("password")
-        if User.query.filter_by(email=email).first():
-            flash("Email already exists.")
-            return redirect(url_for('signup'))
-        new_user = User(email=email, password_hash=generate_password_hash(password))
-        db.session.add(new_user)
-        db.session.commit()
-        flash("Sign-up successful. Please log in.")
-        return redirect(url_for('login'))
-    return render_template("signup.html")  # Create a signup.html template
-
-@app.route("/login", methods=["GET", "POST"])
-def login():
-    if request.method == "POST":
-        email = request.form.get("email")
-        password = request.form.get("password")
-        user = User.query.filter_by(email=email).first()
-        if user and check_password_hash(user.password_hash, password):
-            login_user(user)
-            return redirect(url_for('dashboard'))
-        flash("Invalid credentials.")
-        return redirect(url_for('login'))
-    return render_template("login.html")  # Create a login.html template
-
-@app.route("/logout")
-@login_required
-def logout():
-    logout_user()
-    return redirect(url_for('login'))
-
-# --- Forgot Password ---
-@app.route("/forgot-password", methods=["GET", "POST"])
-def forgot_password():
-    if request.method == "POST":
-        email = request.form.get("email")
-        user = User.query.filter_by(email=email).first()
-        if user:
-            token = s.dumps(email, salt='password-reset-salt')
-            reset_link = url_for('reset_password', token=token, _external=True)
-            # Send email with reset_link
-            msg = Message("Password Reset Request", sender=app.config['MAIL_USERNAME'], recipients=[email])
-            msg.body = f"Please click the following link to reset your password: {reset_link}"
-            mail.send(msg)
-            flash("Password reset link sent to your email.")
-            return redirect(url_for('login'))
-        flash("Email not found.")
-    return render_template("forgot_password.html")  # Create a forgot_password.html template
-
-@app.route("/reset-password/<token>", methods=["GET", "POST"])
-def reset_password(token):
+@app.route("/chat", methods=["POST"])
+def chat():
+    data = request.json
+    user_input = data.get("message", "")
+    if not user_input:
+        return jsonify({"error": "Missing user input"}), 400
     try:
-        email = s.loads(token, salt='password-reset-salt', max_age=3600)
-    except SignatureExpired:
-        return "The token is expired.", 400
-    except BadSignature:
-        return "Invalid token.", 400
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a helpful remodeling assistant for Surprise Granite."},
+                {"role": "user", "content": user_input}
+            ]
+        )
+        return jsonify({"response": response.choices[0].message.content})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-    if request.method == "POST":
-        new_password = request.form.get("password")
-        user = User.query.filter_by(email=email).first()
-        if user:
-            user.password_hash = generate_password_hash(new_password)
-            db.session.commit()
-            flash("Password reset successful. Please log in.")
-            return redirect(url_for('login'))
-    return render_template("reset_password.html")  # Create a reset_password.html template
-
-# --- Dashboard ---
-@app.route("/dashboard")
-@login_required
-def dashboard():
-    quotes = Quote.query.filter_by(user_id=current_user.id).all()
-    return render_template("dashboard.html", quotes=quotes)  # Create a dashboard.html template
-
-# --- API Routes (for estimator and millwork, etc.) ---
+# ── ESTIMATE ENDPOINT ──
 @app.route("/api/estimate", methods=["POST", "OPTIONS"])
 def estimate():
     if request.method == "OPTIONS":
         return jsonify({}), 200
+
     data = request.json
     if not data or not data.get("totalSqFt"):
         return jsonify({"error": "Missing project data"}), 400
+
     try:
         total_sq_ft = float(data.get("totalSqFt"))
         vendor = data.get("vendor", "default vendor")
@@ -208,28 +155,25 @@ def estimate():
         cooktop_cost = cooktop_qty * (160 if cooktop_type.lower() == "premium" else 120)
         backsplash_cost = total_sq_ft * 20 if backsplash.lower() == "yes" else 0
 
+        multiplier = 1.0
         if edge_detail.lower() == "premium":
             multiplier = 1.05
         elif edge_detail.lower() == "custom":
             multiplier = 1.10
-        else:
-            multiplier = 1.0
         material_cost *= multiplier
 
         preliminary_total = material_cost + sink_cost + cooktop_cost + backsplash_cost
         effective_sq_ft = total_sq_ft * 1.20
         slab_count = math.ceil(effective_sq_ft / color_total_sqft)
 
-        if job_type.lower() == "slab only":
-            markup = 1.35
-        else:
-            markup = 1.30
+        markup = 1.35 if job_type.lower() == "slab only" else 1.30
         base_labor_rate = 45
         labor_cost = total_sq_ft * base_labor_rate * markup
 
         total_project_cost = preliminary_total + labor_cost
         final_cost_per_sqft = f"{(total_project_cost / total_sq_ft):.2f}" if total_sq_ft else "0.00"
 
+        # Build prompt for GPT-4 narrative (as before)
         prompt = (
             f"Surprise Granite Detailed Estimate\n\n"
             f"Customer: Mr./Ms. {customer_name}\n"
@@ -278,33 +222,31 @@ def estimate():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ── MILLWORK ESTIMATE ENDPOINT ──
 @app.route("/api/millwork-estimate", methods=["POST", "OPTIONS"])
 def millwork_estimate():
     if request.method == "OPTIONS":
         return jsonify({}), 200
+
     data = request.json
     required_fields = ["roomLength", "roomWidth", "cabinetStyle", "woodType"]
     for field in required_fields:
         if not data.get(field):
             return jsonify({"error": f"Missing {field}"}), 400
+
     try:
         room_length = float(data.get("roomLength"))
         room_width = float(data.get("roomWidth"))
         cabinet_style = data.get("cabinetStyle").strip().lower()
         wood_type = data.get("woodType").strip().lower()
+
         area = room_length * room_width
         base_cost = 50.0
-        style_multiplier = 1.0
-        if cabinet_style == "modern":
-            style_multiplier = 1.2
-        elif cabinet_style == "traditional":
-            style_multiplier = 1.1
-        wood_multiplier = 1.0
-        if wood_type == "oak":
-            wood_multiplier = 1.3
-        elif wood_type == "maple":
-            wood_multiplier = 1.2
+
+        style_multiplier = 1.2 if cabinet_style == "modern" else (1.1 if cabinet_style == "traditional" else 1.0)
+        wood_multiplier = 1.3 if wood_type == "oak" else (1.2 if wood_type == "maple" else 1.0)
         estimated_cost = area * base_cost * style_multiplier * wood_multiplier
+
         prompt = (
             f"Millwork Estimate Details:\n"
             f"Room dimensions: {room_length} ft x {room_width} ft (Area: {area} sq ft)\n"
@@ -316,6 +258,7 @@ def millwork_estimate():
             f"Calculated Estimated Cost: ${estimated_cost:.2f}\n\n"
             "Please provide a comprehensive, professional, and friendly written estimate for millwork services based on the above details."
         )
+
         ai_response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
@@ -324,6 +267,7 @@ def millwork_estimate():
             ]
         )
         narrative = ai_response.choices[0].message.content
+
         return jsonify({
             "area": area,
             "estimatedCost": estimated_cost,
@@ -332,5 +276,49 @@ def millwork_estimate():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ── USER REGISTRATION & LOGIN ENDPOINTS ──
+@app.route("/api/register", methods=["POST", "OPTIONS"])
+def register():
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+
+    data = request.json
+    username = data.get("username")
+    password = data.get("password")
+    if not username or not password:
+        return jsonify({"error": "Missing username or password"}), 400
+    # Here you would normally create the user in your database.
+    # For this example, we simulate a successful registration.
+    users[username] = User(id=len(users)+1, username=username)
+    return jsonify({"message": "User registered successfully", "username": username}), 200
+
+@app.route("/api/login", methods=["POST", "OPTIONS"])
+def login():
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+
+    data = request.json
+    username = data.get("username")
+    password = data.get("password")
+    if not username or not password:
+        return jsonify({"error": "Missing username or password"}), 400
+    # In a real app, you would verify the password (hashed) against your database.
+    # Here, we simulate a successful login only if the username exists and password equals "testpass".
+    if username in users and password == "testpass":
+        user = users[username]
+        login_user(user)
+        return jsonify({"message": "Login successful", "username": username}), 200
+    else:
+        return jsonify({"error": "Invalid credentials"}), 401
+
+@app.route("/api/logout", methods=["POST", "OPTIONS"])
+@login_required
+def logout():
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    logout_user()
+    return jsonify({"message": "Logged out successfully"}), 200
+
+# ── RUN THE APP ──
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
