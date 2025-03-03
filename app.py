@@ -2,23 +2,27 @@ import os
 import math
 import requests, csv
 from io import StringIO
-
 import openai
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 # ── WORKAROUND FOR FLASK-LOGIN / WERKZEUG COMPATIBILITY ──
-# Flask-Login 0.6.2 expects werkzeug.urls.url_decode,
-# which was removed in Werkzeug 3.x. Either pin Werkzeug to <3.0
-# in your requirements.txt or add a temporary monkey-patch:
+# Flask-Login 0.6.2 expects werkzeug.urls.url_decode and url_encode,
+# which were removed/changed in Werkzeug 3.x. Either pin Werkzeug to <3.0
+# or apply the following monkey-patches.
 import werkzeug.urls
 if not hasattr(werkzeug.urls, 'url_decode'):
-    # This is a very simple fallback. In production, consider pinning Werkzeug.
+    # A simple fallback for url_decode (you may wish to implement a proper version)
     def url_decode(s, charset='utf-8'):
-        # For many cases a no-op fallback may work.
         return s
     werkzeug.urls.url_decode = url_decode
 
+if not hasattr(werkzeug.urls, 'url_encode'):
+    # Use Python's standard library function as a replacement
+    from urllib.parse import urlencode as py_urlencode
+    werkzeug.urls.url_encode = py_urlencode
+
+# Now import Flask-Login after applying the monkey-patches
 from flask_login import (
     LoginManager, login_user, login_required,
     logout_user, current_user, UserMixin
@@ -39,11 +43,7 @@ if not OPENAI_API_KEY:
     raise ValueError("Missing OpenAI API Key. Please set it in environment variables.")
 openai.api_key = OPENAI_API_KEY
 
-# ── DATABASE & LOGIN MANAGER SETUP (example using Flask-SQLAlchemy/Flask-Login) ──
-# In a real app you’d configure your database and models.
-# For this snippet we’re not actually creating any tables.
-# (Ensure you have Flask-SQLAlchemy and Flask-Login installed per requirements.txt.)
-# db = SQLAlchemy(app)
+# ── DATABASE & LOGIN MANAGER SETUP ──
 login_manager = LoginManager(app)
 
 # Example User model for Flask-Login (in a real app, use your database model)
@@ -53,12 +53,10 @@ class User(UserMixin):
         self.username = username
 
 # A simple in-memory store for demo purposes.
-# In production, store users in a database.
 users = {"testuser": User(id=1, username="testuser")}
 
 @login_manager.user_loader
 def load_user(user_id):
-    # In a real application, query your user model
     for user in users.values():
         if str(user.id) == str(user_id):
             return user
@@ -173,7 +171,6 @@ def estimate():
         total_project_cost = preliminary_total + labor_cost
         final_cost_per_sqft = f"{(total_project_cost / total_sq_ft):.2f}" if total_sq_ft else "0.00"
 
-        # Build prompt for GPT-4 narrative (as before)
         prompt = (
             f"Surprise Granite Detailed Estimate\n\n"
             f"Customer: Mr./Ms. {customer_name}\n"
@@ -287,8 +284,6 @@ def register():
     password = data.get("password")
     if not username or not password:
         return jsonify({"error": "Missing username or password"}), 400
-    # Here you would normally create the user in your database.
-    # For this example, we simulate a successful registration.
     users[username] = User(id=len(users)+1, username=username)
     return jsonify({"message": "User registered successfully", "username": username}), 200
 
@@ -302,8 +297,6 @@ def login():
     password = data.get("password")
     if not username or not password:
         return jsonify({"error": "Missing username or password"}), 400
-    # In a real app, you would verify the password (hashed) against your database.
-    # Here, we simulate a successful login only if the username exists and password equals "testpass".
     if username in users and password == "testpass":
         user = users[username]
         login_user(user)
