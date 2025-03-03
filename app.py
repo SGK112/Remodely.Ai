@@ -312,6 +312,27 @@ def logout():
     logout_user()
     return jsonify({"message": "Logged out successfully"}), 200
 
+@app.route("/api/forgot-password", methods=["POST", "OPTIONS"])
+def forgot_password():
+    # Handle CORS preflight
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    
+    data = request.json or {}
+    email = data.get("email", "").strip()
+    if not email:
+        return jsonify({"error": "Email is required"}), 400
+    
+    # TODO: In a real app, you'd:
+    # 1. Look up the user by email in your database.
+    # 2. If user exists, generate a reset token (store in DB).
+    # 3. Email user a reset link (e.g. https://www.remodely.ai/reset?token=XYZ).
+    # For this example, we'll just always respond with success:
+    
+    return jsonify({
+        "message": "If that email is associated with an account, a reset link has been sent."
+    }), 200
+    
 # ── RUN THE APP ──
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
