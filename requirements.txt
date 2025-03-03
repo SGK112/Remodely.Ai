@@ -1,4 +1,4 @@
-Flask==3.1.0
+Flask==2.3.3
 openai==0.28.0
 Flask-CORS==5.0.1
 gunicorn==23.0.0
